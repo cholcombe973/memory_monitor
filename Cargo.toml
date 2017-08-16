@@ -1,0 +1,12 @@
+[package]
+name = "memory_monitor"
+description = "Kill and restart a process that is using too much ram"
+version = "0.1.0"
+authors = ["Chris Holcombe <xfactor973@gmail.com>"]
+
+[dependencies]
+clap = "*"
+humannum = "*"
+log = "*"
+procinfo = "*"
+simplelog = "*"
