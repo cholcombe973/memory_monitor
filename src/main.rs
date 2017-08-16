@@ -7,8 +7,8 @@ extern crate procinfo;
 extern crate simplelog;
 
 use std::fs;
+use std::io::Read;
 use std::io::Result as IOResult;
-use std::io::{Error, ErrorKind};
 use std::str::FromStr;
 
 use clap::{Arg, App};
@@ -30,31 +30,57 @@ fn find_all_pids(cmd_name: &str) -> IOResult<Vec<Stat>> {
                     continue;
                 }
             };
-            let pid = i32::from_str(&file_name.to_string_lossy()).map_err(|e| {
-                Error::new(ErrorKind::Other, format!("pid parsing failed: {}", e))
-            })?;
+            debug!("Parsing pid: {:?}", file_name);
+            let pid = match i32::from_str(&file_name.to_string_lossy()) {
+                Ok(p) => p,
+                Err(_) => {
+                    trace!("Skipping entry: {:?}.  Not a process", file_name);
+                    continue;
+                }
+            };
             let s = stat(pid)?;
             if s.command == cmd_name {
                 info.push(s);
             }
         } else {
             // Skip entries for anything not a process
-            debug!("Skipping entry: {:?}.  Not a process", path);
+            trace!("Skipping entry: {:?}.  Not a process", path);
             continue;
         }
     }
     Ok(info)
 }
+fn get_cmdline(pid: i32) -> IOResult<Vec<String>> {
+    let mut f = fs::File::open(format!("/proc/{}/cmdline", pid))?;
+    let mut buff = String::new();
+    f.read_to_string(&mut buff)?;
+    Ok(buff.split("\0").map(|s| s.to_string()).collect())
+}
 
-fn kill_and_restart(pid_info: Vec<Stat>, limit: u64) {
+fn kill_and_restart(pid_info: Vec<Stat>, limit: u64, kill_parent: bool) {
     for stat in pid_info {
         if stat.vsize > limit as usize {
-            println!(
-                "Killing {} process {} for memory at {} and restarting",
-                stat.command,
-                stat.pid,
-                stat.vsize
-            );
+            let cmdline = get_cmdline(stat.pid).unwrap();
+            match kill_parent {
+                true => {
+                    println!(
+                        "Killing {} process {} for memory at {} and restarting.  Cmdline: {}",
+                        stat.command,
+                        stat.ppid,
+                        stat.vsize,
+                        cmdline.join(" ")
+                    )
+                }
+                false => {
+                    println!(
+                        "Killing {} process {} for memory at {} and restarting.  Cmdline: {}",
+                        stat.command,
+                        stat.pid,
+                        stat.vsize,
+                        cmdline.join(" ")
+                    )
+                }
+            };
         }
     }
 }
@@ -81,8 +107,16 @@ fn main() {
                 )
                 .long("limit")
                 .required(true)
-                .short("m")
+                .short("l")
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("parent")
+                .help(
+                    "For a child process set this to kill and respawn the parent",
+                )
+                .long("parent")
+                .short("s"),
         )
         .arg(Arg::with_name("v").short("v").multiple(true).help(
             "Sets the level of verbosity",
@@ -94,9 +128,11 @@ fn main() {
         1 => log::LogLevelFilter::Debug,
         _ => log::LogLevelFilter::Trace,
     };
+    debug!("Setting log level to: {}", level);
     let _ = SimpleLogger::init(level, Config::default());
 
     let limit = matches.value_of("limit").unwrap();
+    debug!("Memory limit: {}", limit);
     let proc_name = matches.value_of("process_name").unwrap();
     let memory_byte_limit: u64 = match parse_integer(limit) {
         Ok(bytes) => bytes,
@@ -114,6 +150,5 @@ fn main() {
         }
     };
     println!("Determining if any should be restarted");
-    kill_and_restart(pid_info, memory_byte_limit);
-
+    kill_and_restart(pid_info, memory_byte_limit, matches.is_present("parent"));
 }
