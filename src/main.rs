@@ -73,7 +73,8 @@ fn get_cmdline(pid: i32) -> IOResult<Vec<String>> {
 
 fn spinlock(pid: i32) {
     while Path::new(&format!("/proc/{}", pid)).exists() {
-        thread::sleep(time::Duration::from_millis(10));
+        trace!("Sleeping 10ms");
+        //thread::sleep(time::Duration::from_millis(10));
     }
 }
 
@@ -208,4 +209,5 @@ fn main() {
         matches.is_present("parent"),
         matches.is_present("test"),
     );
+    println!("Finished");
 }
