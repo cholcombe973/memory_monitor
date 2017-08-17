@@ -59,7 +59,14 @@ fn get_cmdline(pid: i32) -> IOResult<Vec<String>> {
     let mut f = fs::File::open(format!("/proc/{}/cmdline", pid))?;
     let mut buff = String::new();
     f.read_to_string(&mut buff)?;
-    Ok(buff.split("\0").map(|s| s.to_string()).collect())
+    let args: Vec<String> = buff.split("\0")
+        .map(String::from)
+        .filter(|arg| !arg.is_empty())
+        .collect();
+    for arg in &args {
+        trace!("cmd arg: {:?}", arg.as_bytes());
+    }
+    Ok(args)
 }
 
 //TODO This function is too long
@@ -95,6 +102,11 @@ fn kill_and_restart(
             );
             // If this isn't a simulation we're actually going to kill/restart things here
             if !simulate {
+                // Safety first!
+                if kill_pid == 1 {
+                    warn!("Cannot kill pid 1.  Please verify what you're doing here");
+                    continue;
+                }
                 kill(Pid::from_raw(kill_pid), Signal::SIGKILL).map_err(
                     |e| {
                         Error::new(ErrorKind::Other, e)
