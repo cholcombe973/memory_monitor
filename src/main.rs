@@ -10,8 +10,10 @@ extern crate simplelog;
 use std::fs;
 use std::io::{Error, ErrorKind, Read};
 use std::io::Result as IOResult;
+use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
+use std::{thread, time};
 
 use clap::{Arg, App};
 use humannum::parse_integer;
@@ -69,6 +71,12 @@ fn get_cmdline(pid: i32) -> IOResult<Vec<String>> {
     Ok(args)
 }
 
+fn spinlock(pid: i32) {
+    while Path::new(&format!("/proc/{}", pid)).exists() {
+        thread::sleep(time::Duration::from_millis(10));
+    }
+}
+
 //TODO This function is too long
 fn kill_and_restart(
     pid_info: Vec<Stat>,
@@ -78,43 +86,44 @@ fn kill_and_restart(
 ) -> IOResult<()> {
     for stat_info in pid_info {
         if stat_info.vsize > limit as usize {
-            let cmd = if kill_parent {
-                stat(stat_info.ppid)?.command
-            } else {
-                stat_info.command
-            };
             let cmdline = if kill_parent {
-                get_cmdline(stat_info.pid)?
-            } else {
                 get_cmdline(stat_info.ppid)?
-            };
-            let kill_pid = if kill_parent {
-                stat_info.ppid
             } else {
-                stat_info.pid
+                get_cmdline(stat_info.pid)?
             };
+            debug!("cmdline: {:?}", cmdline);
             println!(
                 "Killing {} process {} for memory at {} and restarting.  Cmdline: {}",
-                cmd,
-                kill_pid,
+                cmdline[0],
+                stat_info.pid,
                 stat_info.vsize,
                 cmdline.join(" ")
             );
             // If this isn't a simulation we're actually going to kill/restart things here
             if !simulate {
                 // Safety first!
-                if kill_pid == 1 {
+                if stat_info.pid == 1 {
                     warn!("Cannot kill pid 1.  Please verify what you're doing here");
                     continue;
                 }
-                kill(Pid::from_raw(kill_pid), Signal::SIGKILL).map_err(
-                    |e| {
-                        Error::new(ErrorKind::Other, e)
-                    },
-                )?;
-                println!("Starting {} up again", cmd);
+                kill(Pid::from_raw(stat_info.pid), Signal::SIGTERM)
+                    .map_err(|e| Error::new(ErrorKind::Other, e))?;
+                // Spinlock wait for the process to stop
+                spinlock(stat_info.pid);
+                if kill_parent {
+                    if stat_info.ppid == 1 {
+                        warn!("Cannot kill pid 1.  Please verify what you're doing here");
+                        continue;
+                    }
+                    println!("Also killing parent process: {}", stat_info.ppid);
+                    kill(Pid::from_raw(stat_info.ppid), Signal::SIGTERM)
+                        .map_err(|e| Error::new(ErrorKind::Other, e))?;
+                    // Spinlock wait for the process to stop
+                    spinlock(stat_info.ppid);
+                }
+                println!("Starting {} up again", cmdline[0]);
                 // Restart the process
-                Command::new(cmd).args(&cmdline).spawn()?;
+                Command::new(&cmdline[0]).args(&cmdline[1..]).spawn()?;
                 println!("Process successfully spawned");
             }
         }
