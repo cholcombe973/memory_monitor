@@ -3,16 +3,20 @@ extern crate clap;
 extern crate humannum;
 #[macro_use]
 extern crate log;
+extern crate nix;
 extern crate procinfo;
 extern crate simplelog;
 
 use std::fs;
-use std::io::Read;
+use std::io::{Error, ErrorKind, Read};
 use std::io::Result as IOResult;
+use std::process::Command;
 use std::str::FromStr;
 
 use clap::{Arg, App};
 use humannum::parse_integer;
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 use procinfo::pid::{stat, Stat};
 use simplelog::{Config, SimpleLogger};
 
@@ -50,6 +54,7 @@ fn find_all_pids(cmd_name: &str) -> IOResult<Vec<Stat>> {
     }
     Ok(info)
 }
+
 fn get_cmdline(pid: i32) -> IOResult<Vec<String>> {
     let mut f = fs::File::open(format!("/proc/{}/cmdline", pid))?;
     let mut buff = String::new();
@@ -57,32 +62,52 @@ fn get_cmdline(pid: i32) -> IOResult<Vec<String>> {
     Ok(buff.split("\0").map(|s| s.to_string()).collect())
 }
 
-fn kill_and_restart(pid_info: Vec<Stat>, limit: u64, kill_parent: bool) {
-    for stat in pid_info {
-        if stat.vsize > limit as usize {
-            let cmdline = get_cmdline(stat.pid).unwrap();
-            match kill_parent {
-                true => {
-                    println!(
-                        "Killing {} process {} for memory at {} and restarting.  Cmdline: {}",
-                        stat.command,
-                        stat.ppid,
-                        stat.vsize,
-                        cmdline.join(" ")
-                    )
-                }
-                false => {
-                    println!(
-                        "Killing {} process {} for memory at {} and restarting.  Cmdline: {}",
-                        stat.command,
-                        stat.pid,
-                        stat.vsize,
-                        cmdline.join(" ")
-                    )
-                }
+//TODO This function is too long
+fn kill_and_restart(
+    pid_info: Vec<Stat>,
+    limit: u64,
+    kill_parent: bool,
+    simulate: bool,
+) -> IOResult<()> {
+    for stat_info in pid_info {
+        if stat_info.vsize > limit as usize {
+            let cmd = if kill_parent {
+                stat(stat_info.ppid)?.command
+            } else {
+                stat_info.command
             };
+            let cmdline = if kill_parent {
+                get_cmdline(stat_info.pid)?
+            } else {
+                get_cmdline(stat_info.ppid)?
+            };
+            let kill_pid = if kill_parent {
+                stat_info.ppid
+            } else {
+                stat_info.pid
+            };
+            println!(
+                "Killing {} process {} for memory at {} and restarting.  Cmdline: {}",
+                cmd,
+                kill_pid,
+                stat_info.vsize,
+                cmdline.join(" ")
+            );
+            // If this isn't a simulation we're actually going to kill/restart things here
+            if !simulate {
+                kill(Pid::from_raw(kill_pid), Signal::SIGKILL).map_err(
+                    |e| {
+                        Error::new(ErrorKind::Other, e)
+                    },
+                )?;
+                println!("Starting {} up again", cmd);
+                // Restart the process
+                Command::new(cmd).args(&cmdline).spawn()?;
+                println!("Process successfully spawned");
+            }
         }
     }
+    Ok(())
 }
 
 fn main() {
@@ -118,6 +143,12 @@ fn main() {
                 .long("parent")
                 .short("s"),
         )
+        .arg(
+            Arg::with_name("test")
+                .help("Simulate but don't take any action")
+                .long("test")
+                .short("t"),
+        )
         .arg(Arg::with_name("v").short("v").multiple(true).help(
             "Sets the level of verbosity",
         ))
@@ -150,5 +181,10 @@ fn main() {
         }
     };
     println!("Determining if any should be restarted");
-    kill_and_restart(pid_info, memory_byte_limit, matches.is_present("parent"));
+    kill_and_restart(
+        pid_info,
+        memory_byte_limit,
+        matches.is_present("parent"),
+        matches.is_present("test"),
+    );
 }
