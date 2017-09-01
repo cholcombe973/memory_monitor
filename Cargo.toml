@@ -8,6 +8,5 @@ authors = ["Chris Holcombe <xfactor973@gmail.com>"]
 clap = "*"
 humannum = "*"
 log = "*"
-nix = "*"
-procinfo = "*"
+process_utils = "*"
 simplelog = "*"
